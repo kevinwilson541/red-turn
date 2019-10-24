@@ -31,9 +31,11 @@
 %% API functions
 %%====================================================================
 
+-spec start_link(Opts :: redturn_opts()) -> {ok, pid()} | {error, term()}.
 start_link(Opts) ->
     gen_server:start_link(?MODULE, Opts, []).
 
+-spec stop(Pid :: pid()) -> ok.
 stop(Pid) ->
     gen_server:stop(Pid).
 
@@ -80,7 +82,8 @@ init(#redturn_opts{module=Mod, conn_opts=COpts, subconn_opts=SOpts}) ->
 
     {ok, State2}.
 
-terminate(_Reason, _State) ->
+terminate(_Reason, State=#redturn_state{req_queue=RQ}) ->
+    [terminate_resource(Resource, Q, State) || {Resource, Q} <- maps:to_list(RQ)],
     ok.
 
 handle_call({wait, Resource, Timeout}, {From, Ref}, State) ->
@@ -227,8 +230,8 @@ remove_from_req_queue(Ctx=#redturn_ctx{resource=Resource, id=Id}, State=#redturn
                     State#redturn_state{req_queue=NRQ2, waiting=NW}
             end;
         {value, Other} ->
-            Ctx = maps:get(Other, W, #redturn_ctx{}),
-            safe_reply({error, missed_ctx}, Ctx),
+            OCtx = maps:get(Other, W, #redturn_ctx{}),
+            safe_reply({error, missed_ctx}, OCtx),
             {_, NQ} = queue:out(Q),
             NW = maps:remove(Other, W),
             remove_from_req_queue(Ctx, State#redturn_state{req_queue=NQ, waiting=NW});
@@ -308,3 +311,13 @@ safe_reply(Res, #redturn_ctx{from=Pid, ref=Ref}) when is_pid(Pid), is_reference(
     end;
 safe_reply(_, _) ->
     ok.
+
+terminate_resource(Resource, Q, State=#redturn_state{waiting=W}) ->
+    case queue:out(Q) of
+        {{value, Id}, NQ} ->
+            Ctx = maps:get(Id, W),
+            safe_reply({error, closed}, Ctx),
+            terminate_resource(Resource, NQ, State);
+        {empty, Q} ->
+            State
+    end.

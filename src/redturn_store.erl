@@ -1,7 +1,7 @@
 
 -module(redturn_store).
 
--include("redturn_server.hrl").
+-include("redturn.hrl").
 
 -callback start_conn(Opts :: redturn_conn_opts()) -> {ok, conn()} | {error, term()}.
 

@@ -3,7 +3,7 @@
 
 -behavior(redturn_store).
 
--include("redturn_server.hrl").
+-include("redturn.hrl").
 
 -export([start_conn/1,
          start_sub/1,
