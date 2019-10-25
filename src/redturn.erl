@@ -39,17 +39,21 @@ start_link(Opts) ->
 stop(Pid) ->
     gen_server:stop(Pid).
 
+-spec wait(Pid :: pid(), Resource :: binary(), Timeout :: non_neg_integer()) -> {ok, binary()} | {error, term()}.
 wait(Pid, Resource, Timeout) ->
     gen_server:call(Pid, {wait, Resource, Timeout}).
 
+-spec wait_async(Pid :: pid(), Resource :: binary(), Timeout :: non_neg_integer()) -> reference().
 wait_async(Pid, Resource, Timeout) ->
     wait_async(Pid, Resource, Timeout, erlang:self()).
 
+-spec wait_async(Pid :: pid(), Resource :: binary(), Timeout :: non_neg_integer(), To :: pid()) -> reference().
 wait_async(Pid, Resource, Timeout, To) ->
     Ref = erlang:make_ref(),
     gen_server:cast(Pid, {wait, Resource, Timeout, Ref, To}),
     Ref.
 
+-spec signal(Pid :: pid(), Resource :: binary(), Id :: binary()) -> ok.
 signal(Pid, Resource, Id) ->
     gen_server:cast(Pid, {signal, Resource, Id}).
 
@@ -57,15 +61,19 @@ signal(Pid, Resource, Id) ->
 %% gen_server callbacks
 %%====================================================================
 
-init(#redturn_opts{module=Mod, conn_opts=COpts, subconn_opts=SOpts}) ->
+-spec init(Opts :: redturn_opts()) -> {ok, redturn_state()}.
+init(#redturn_opts{id=Id, module=Mod, conn_opts=COpts, subconn_opts=SOpts}) ->
     {ok, Conn} = Mod:start_conn(COpts),
     {ok, SubConn} = Mod:start_sub(SOpts),
 
     Mod:controlling_process(SubConn),
 
-    Id = to_hex(crypto:strong_rand_bytes(?ID_LEN)),
+    NId = case is_binary(Id) of
+              true -> Id;
+              false -> to_hex(crypto:strong_rand_bytes(?ID_LEN))
+          end,
 
-    State = #redturn_state{ id=Id,
+    State = #redturn_state{ id=NId,
                             module=Mod,
                             conn=Conn,
                             sub_conn=SubConn,
@@ -82,29 +90,41 @@ init(#redturn_opts{module=Mod, conn_opts=COpts, subconn_opts=SOpts}) ->
 
     {ok, State2}.
 
+-spec terminate(Reason :: term(), State :: redturn_state()) -> ok.
 terminate(_Reason, State=#redturn_state{req_queue=RQ}) ->
     [terminate_resource(Resource, Q, State) || {Resource, Q} <- maps:to_list(RQ)],
     ok.
 
-handle_call({wait, Resource, Timeout}, {From, Ref}, State) ->
+-spec handle_call(Msg :: term(), From :: {pid(), reference()}, State :: redturn_state()) -> {noreply, redturn_state()}.
+handle_call({wait, Resource, Timeout}, {From, Ref}, State) when
+    is_binary(Resource),
+    is_integer(Timeout) andalso Timeout > 0 ->
     NState = add_wait(Resource, Timeout, From, Ref, State),
     {noreply, NState};
 handle_call(_Req, _From, State) ->
     {noreply, State}.
 
-handle_cast({wait, Resource, Timeout, Ref, From}, State) ->
+-spec handle_cast(Msg :: term(), State :: redturn_state()) -> {noreply, redturn_state()}.
+handle_cast({wait, Resource, Timeout, Ref, From}, State) when 
+    is_binary(Resource),
+    is_integer(Timeout) andalso Timeout > 0 ->
     NState = add_wait(Resource, Timeout, From, Ref, State),
     {noreply, NState};
-handle_cast({signal, Resource, Id}, State) ->
+handle_cast({signal, Resource, Id}, State) when
+    is_binary(Resource),
+    is_binary(Id) ->
     NState = signal_done(Resource, Id, State),
     {noreply, NState};
 handle_cast(_Req, State) ->
     {noreply, State}.
 
+-spec handle_info(Msg :: term(), State :: redturn_state()) -> {noreply, redturn_state()}.
 handle_info(reset_msg_gen, State) ->
     NState = reset_msg_gen(State),
     {noreply, NState};
-handle_info({message, Channel, Msg, SConn}, State=#redturn_state{id=Channel, module=Mod, sub_conn=SConn}) ->
+handle_info({message, Channel, Msg, SConn}, State=#redturn_state{id=Channel, module=Mod, sub_conn=SConn}) when
+    is_binary(Channel),
+    is_binary(Msg) ->
     Mod:ack_message(SConn),
     case binary:split(Msg, <<":">>, [global]) of
         [Resource, Id] ->
@@ -116,7 +136,9 @@ handle_info({message, Channel, Msg, SConn}, State=#redturn_state{id=Channel, mod
 handle_info({response, Reply}, State) ->
     NState = handle_redis_reply(Reply, State),
     {noreply, NState};
-handle_info({clear_head, Resource, Id}, State=#redturn_state{head_track=Track}) ->
+handle_info({clear_head, Resource, Id}, State=#redturn_state{head_track=Track}) when
+    is_binary(Resource),
+    is_binary(Id) ->
     case maps:get(Resource, Track, undefined) of
         {Id, _Ref} ->
             NState = signal_done(Resource, Id, State),
@@ -125,7 +147,8 @@ handle_info({clear_head, Resource, Id}, State=#redturn_state{head_track=Track}) 
         _ ->
             {noreply, State}
     end;
-handle_info({subscribed, Id, SConn}, State=#redturn_state{id=Id, module=Mod, sub_conn=SConn}) ->
+handle_info({subscribed, Id, SConn}, State=#redturn_state{id=Id, module=Mod, sub_conn=SConn}) when
+    is_binary(Id) ->
     Mod:ack_message(SConn),
     {noreply, State};
 handle_info(_Info, State) ->
@@ -214,12 +237,12 @@ add_to_req_queue(Ctx=#redturn_ctx{resource=Resource, id=Id}, State=#redturn_stat
     State#redturn_state{req_queue=NRQ, queue=NQ, waiting=NW}.
 
 %% remove items from queue under resource until we reach Id, responding to waiting contexts with error
-remove_from_req_queue(Ctx=#redturn_ctx{resource=Resource, id=Id}, State=#redturn_state{req_queue=RQ, waiting=W}) ->
+remove_from_req_queue(Ctx=#redturn_ctx{resource=Resource, id=Id}, Res, State=#redturn_state{req_queue=RQ, waiting=W}) ->
     Q = maps:get(Resource, RQ, queue:new()),
     case queue:peek(Q) of
         {value, Id} ->
             NW = maps:remove(Id, W),
-            safe_reply({ok, Id}, Ctx),
+            safe_reply(Res, Ctx),
             {_, NQ} = queue:out(Q),
             case queue:len(NQ) of
                 0 ->
@@ -234,7 +257,7 @@ remove_from_req_queue(Ctx=#redturn_ctx{resource=Resource, id=Id}, State=#redturn
             safe_reply({error, missed_ctx}, OCtx),
             {_, NQ} = queue:out(Q),
             NW = maps:remove(Other, W),
-            remove_from_req_queue(Ctx, State#redturn_state{req_queue=NQ, waiting=NW});
+            remove_from_req_queue(Ctx, Res, State#redturn_state{req_queue=NQ, waiting=NW});
         empty ->
             State#redturn_state{req_queue=maps:remove(Resource, RQ)}
     end.
@@ -262,17 +285,27 @@ notify_wait(Resource, Id, State=#redturn_state{waiting=W}) ->
         undefined ->
             signal_done(Resource, Id, State);
         Ctx=#redturn_ctx{id=Id, resource=Resource, timeout=Timeout} ->
-            NState = remove_from_req_queue(Ctx, State),
+            NState = remove_from_req_queue(Ctx, {ok, Id}, State),
             replace_head_track(Resource, Id, Timeout, NState)
     end.
 
-handle_redis_reply({error, _}, State=#redturn_state{queue=Q}) ->
-    {_, NQ} = queue:out(Q),
-    State#redturn_state{queue=NQ};
-handle_redis_reply({ok, undefined}, State=#redturn_state{queue=Q}) ->
-    {_, NQ} = queue:out(Q),
-    State#redturn_state{queue=NQ};
-handle_redis_reply({ok, Val}, State=#redturn_state{queue=Q}) ->
+handle_redis_reply({error, Err}, State=#redturn_state{queue=Q, waiting=W}) ->
+    case queue:out(Q) of
+        {empty, Q} ->
+            State;
+        {{value, #redturn_ctx{id=Id}}, NQ} ->
+            case maps:get(Id, W, undefined) of
+                undefined ->
+                    State;
+                Ctx ->
+                    % leave context in the request queue for resource of this context, so we don't remove currently
+                    % waiting requests
+                    safe_reply({error, Err}, Ctx),
+                    State#redturn_state{queue=NQ, waiting=maps:remove(Id, W)}
+            end
+    end;
+handle_redis_reply({ok, Val}, State=#redturn_state{queue=Q}) when
+    is_binary(Val) ->
     case binary:split(Val, <<":">>, [global]) of
         [Id, _Channel, TimeoutStr] ->
             Timeout = binary_to_integer(TimeoutStr),
@@ -285,7 +318,10 @@ handle_redis_reply({ok, Val}, State=#redturn_state{queue=Q}) ->
         _ ->
             {_, NQ} = queue:out(Q),
             State#redturn_state{queue=NQ}
-    end.
+    end;
+handle_redis_reply({ok, _}, State=#redturn_state{queue=Q}) ->
+    {_, NQ} = queue:out(Q),
+    State#redturn_state{queue=NQ}.
 
 replace_head_track(Resource, Id, Timeout, State=#redturn_state{head_track=Track}) ->
     case maps:get(Resource, Track, undefined) of

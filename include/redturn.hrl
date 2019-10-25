@@ -3,7 +3,7 @@
 
 -record(redturn_sub_opts, { host, port, database, password, reconnect, max_queue_size, queue_behavior }).
 
--record(redturn_opts, { module=redturn_eredis, conn_opts, subconn_opts }).
+-record(redturn_opts, { id, module=redturn_eredis, conn_opts, subconn_opts }).
 
 -record(redturn_state, { id, queue, conn, sub_conn, module, base, inc, waiting, req_queue, head_track, scripts }).
 
