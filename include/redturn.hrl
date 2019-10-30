@@ -7,7 +7,7 @@
 
 -record(redturn_state, { id, queue, conn, sub_conn, module, base, inc, waiting, req_queue, head_track, scripts }).
 
--record(redturn_ctx, { from, ref, resource, id, timeout }).
+-record(redturn_ctx, { command, from, ref, resource, id, timeout }).
 
 
 -type redturn_conn_opts() :: #redturn_conn_opts{}.
@@ -28,7 +28,9 @@
 
 -type chan() :: binary().
 
--type redturn_call_msg() :: {wait, binary(), non_neg_integer()}.
+-type redturn_call_msg() ::
+    {wait, binary(), non_neg_integer()} |
+    {signal, binary(), binary()}.
 
 -type redturn_cast_msg() ::
     {wait, binary(), non_neg_integer(), reference(), pid()} |
