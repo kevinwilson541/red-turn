@@ -26,34 +26,42 @@
 -include("redturn.hrl").
 
 
-
 %%====================================================================
 %% API functions
 %%====================================================================
 
 -spec start_link(Opts :: redturn_opts()) -> {ok, pid()} | {error, term()}.
+%% @doc Starts an instance of redturn, linking the calling process with the created server returned.
 start_link(Opts) ->
     gen_server:start_link(?MODULE, Opts, []).
 
 -spec stop(Pid :: pid()) -> ok.
+%% @doc Stops redturn server `Pid'.
 stop(Pid) ->
     gen_server:stop(Pid).
 
 -spec wait(Pid :: pid(), Resource :: binary(), Timeout :: non_neg_integer()) -> {ok, binary()} | {error, term()}.
+% @doc Calls redturn server `Pid' to acquire a lock on resource `Resource', holding the lock for `Timeout' milliseconds once the lock is acquired. Returns
+% the ID associated with the holder of the lock.
 wait(Pid, Resource, Timeout) ->
     gen_server:call(Pid, {wait, Resource, Timeout}).
 
 -spec wait_async(Pid :: pid(), Resource :: binary(), Timeout :: non_neg_integer()) -> reference().
+% @doc Asynchronously calls redturn server `Pid' to acquire a lock on resource `Resource', holding the lock for `Timeout' milliseconds once the lock is acquired.
+% Returns a reference `Ref'; the currently running process will receive a message of the form `{Ref, {ok, Id}} | {Ref, {error, Err}}' in response to this request.
 wait_async(Pid, Resource, Timeout) ->
     wait_async(Pid, Resource, Timeout, erlang:self()).
 
 -spec wait_async(Pid :: pid(), Resource :: binary(), Timeout :: non_neg_integer(), To :: pid()) -> reference().
+% @doc Asynchronously calls redturn server `Pid' to acquire a lock on resource `Resource', holding the lock for `Timeout' milliseconds once the lock is acquired.
+% Returns a reference `Ref'; process `To' will receive a message of the form `{Ref, {ok, Id}} | {Ref, {error, Err}}' in response to this request.
 wait_async(Pid, Resource, Timeout, To) ->
     Ref = erlang:make_ref(),
     gen_server:cast(Pid, {wait, Resource, Timeout, Ref, To}),
     Ref.
 
 -spec signal(Pid :: pid(), Resource :: binary(), Id :: binary()) -> ok.
+% @doc Asychronously signals to redturn server `Pid' that holder `Id' of resource `Resource' is ready to release it's lock.
 signal(Pid, Resource, Id) ->
     gen_server:cast(Pid, {signal, Resource, Id}).
 
@@ -95,7 +103,7 @@ terminate(_Reason, State=#redturn_state{req_queue=RQ}) ->
     [terminate_resource(Resource, Q, State) || {Resource, Q} <- maps:to_list(RQ)],
     ok.
 
--spec handle_call(Msg :: term(), From :: {pid(), reference()}, State :: redturn_state()) -> {noreply, redturn_state()}.
+-spec handle_call(Msg :: redturn_call_msg(), From :: {pid(), reference()}, State :: redturn_state()) -> {noreply, redturn_state()}.
 handle_call({wait, Resource, Timeout}, {From, Ref}, State) when
     is_binary(Resource),
     is_integer(Timeout) andalso Timeout > 0 ->
@@ -104,7 +112,7 @@ handle_call({wait, Resource, Timeout}, {From, Ref}, State) when
 handle_call(_Req, _From, State) ->
     {noreply, State}.
 
--spec handle_cast(Msg :: term(), State :: redturn_state()) -> {noreply, redturn_state()}.
+-spec handle_cast(Msg :: redturn_cast_msg(), State :: redturn_state()) -> {noreply, redturn_state()}.
 handle_cast({wait, Resource, Timeout, Ref, From}, State) when 
     is_binary(Resource),
     is_integer(Timeout) andalso Timeout > 0 ->
@@ -118,7 +126,7 @@ handle_cast({signal, Resource, Id}, State) when
 handle_cast(_Req, State) ->
     {noreply, State}.
 
--spec handle_info(Msg :: term(), State :: redturn_state()) -> {noreply, redturn_state()}.
+-spec handle_info(Msg :: redturn_info_msg(), State :: redturn_state()) -> {noreply, redturn_state()}.
 handle_info(reset_msg_gen, State) ->
     NState = reset_msg_gen(State),
     {noreply, NState};
@@ -161,17 +169,21 @@ code_change(_OldVsn, State, _Extra) ->
 %% Internal functions
 %%====================================================================
 
+-spec to_hex(Bin :: binary()) -> binary().
 to_hex(Bin) ->
     << <<(hex(A)), (hex(B))>> || <<A:4, B:4>> <= Bin>>.
 
+-spec hex(B :: binary()) -> integer().
 hex(A) when A < 10 ->
     $0 + A;
 hex(A) ->
     A + $a - 10.
 
+-spec subscribe_to_channel(State :: redturn_state()) -> ok.
 subscribe_to_channel(#redturn_state{module=Mod, sub_conn=SConn, id=Id}) ->
     Mod:subscribe(SConn, [Id]).
 
+-spec add_script() -> binary().
 add_script() ->
     <<"
         local list = KEYS[1]
@@ -186,6 +198,7 @@ add_script() ->
         return redis.call(\"LINDEX\", list, 0)
     ">>.
 
+-spec remove_script() -> binary().
 remove_script() ->
     <<"
         local list = KEYS[1]
@@ -219,16 +232,19 @@ remove_script() ->
         return next
     ">>.
 
+-spec load_scripts(State :: redturn_state()) -> redturn_state().
 load_scripts(State=#redturn_state{module=Mod, conn=C}) ->
     AddScript = add_script(),
     RemoveScript = remove_script(),
     [{ok, AddSha}, {ok, RemoveSha}] = Mod:qp(C, [[<<"SCRIPT">>, <<"LOAD">>, AddScript], [<<"SCRIPT">>, <<"LOAD">>, RemoveScript]]),
     State#redturn_state{scripts={AddSha, RemoveSha}}.
 
+-spec gen_msg_id(State :: redturn_state()) -> {binary(), redturn_state()}.
 gen_msg_id(State=#redturn_state{base=Base, inc=Inc}) ->
     Id = <<Base/binary, ".", (integer_to_binary(Inc))/binary>>,
     {Id, State#redturn_state{inc=Inc+1}}.
 
+-spec add_to_req_queue(Ctx :: redturn_ctx(), State :: redturn_state()) -> redturn_state().
 add_to_req_queue(Ctx=#redturn_ctx{resource=Resource, id=Id}, State=#redturn_state{req_queue=RQ, queue=Q, waiting=W}) ->
     InnerQ = maps:get(Resource, RQ, queue:new()),
     NRQ = maps:put(Resource, queue:in(Id, InnerQ), RQ),
@@ -237,6 +253,7 @@ add_to_req_queue(Ctx=#redturn_ctx{resource=Resource, id=Id}, State=#redturn_stat
     State#redturn_state{req_queue=NRQ, queue=NQ, waiting=NW}.
 
 %% remove items from queue under resource until we reach Id, responding to waiting contexts with error
+-spec remove_from_req_queue(Ctx :: redturn_ctx(), Res :: {ok, binary()} | {error, term()}, State :: redturn_state()) -> redturn_state().
 remove_from_req_queue(Ctx=#redturn_ctx{resource=Resource, id=Id}, Res, State=#redturn_state{req_queue=RQ, waiting=W}) ->
     Q = maps:get(Resource, RQ, queue:new()),
     case queue:peek(Q) of
@@ -262,6 +279,7 @@ remove_from_req_queue(Ctx=#redturn_ctx{resource=Resource, id=Id}, Res, State=#re
             State#redturn_state{req_queue=maps:remove(Resource, RQ)}
     end.
 
+-spec add_wait(Resource :: binary(), Timeout :: non_neg_integer(), From :: pid(), Ref :: reference(), State :: redturn_state()) -> redturn_state().
 add_wait(Resource, Timeout, From, Ref, State=#redturn_state{id=Channel, conn=C, module=Mod, scripts={AddSha, _}}) ->
     {Id, State1} = gen_msg_id(State),
     Val = <<Id/binary, ":", Channel/binary, ":", (integer_to_binary(Timeout))/binary>>,
@@ -269,17 +287,20 @@ add_wait(Resource, Timeout, From, Ref, State=#redturn_state{id=Channel, conn=C, 
     Ctx = #redturn_ctx{from=From, ref=Ref, resource=Resource, id=Id, timeout=Timeout},
     add_to_req_queue(Ctx, State1).
 
+-spec signal_done(Resource :: binary(), Id :: binary(), State :: redturn_state()) -> redturn_state().
 signal_done(Resource, Id, State=#redturn_state{conn=C, module=Mod, scripts={_, RemoveSha}, queue=Q}) ->
     ok = Mod:q_async(C, [<<"EVALSHA">>, RemoveSha, 1, Resource, Id]),
     NQ = queue:in(#redturn_ctx{resource=Resource}, Q),
     State#redturn_state{queue=NQ}.
 
+-spec reset_msg_gen(State :: redturn_state()) -> redturn_state().
 reset_msg_gen(State) ->
     Base = to_hex(crypto:strong_rand_bytes(?ID_LEN)),
     Inc = 0,
     erlang:start_timer(?RESET_INTERVAL, erlang:self(), reset_msg_gen),
     State#redturn_state{base=Base, inc=Inc}.
 
+-spec notify_wait(Resource :: binary(), Id :: binary(), State :: redturn_state()) -> redturn_state().
 notify_wait(Resource, Id, State=#redturn_state{waiting=W}) ->
     case maps:get(Id, W, undefined) of
         undefined ->
@@ -289,6 +310,7 @@ notify_wait(Resource, Id, State=#redturn_state{waiting=W}) ->
             replace_head_track(Resource, Id, Timeout, NState)
     end.
 
+-spec handle_redis_reply(Res :: {ok, binary()} | {error, term()}, State :: redturn_state()) -> redturn_state().
 handle_redis_reply({error, Err}, State=#redturn_state{queue=Q, waiting=W}) ->
     case queue:out(Q) of
         {empty, Q} ->
@@ -323,6 +345,7 @@ handle_redis_reply({ok, _}, State=#redturn_state{queue=Q}) ->
     {_, NQ} = queue:out(Q),
     State#redturn_state{queue=NQ}.
 
+-spec replace_head_track(Resource :: binary(), Id :: binary(), Timeout :: non_neg_integer(), State :: redturn_state()) -> redturn_state().
 replace_head_track(Resource, Id, Timeout, State=#redturn_state{head_track=Track}) ->
     case maps:get(Resource, Track, undefined) of
         {HeadId, Ref} when HeadId =/= Id ->
@@ -338,6 +361,7 @@ replace_head_track(Resource, Id, Timeout, State=#redturn_state{head_track=Track}
             State#redturn_state{head_track=NTrack}
     end.
 
+-spec safe_reply(Res :: {ok, binary()} | {error, term()}, Ctx :: redturn_ctx()) -> ok.
 safe_reply(Res, #redturn_ctx{from=Pid, ref=Ref}) when is_pid(Pid), is_reference(Ref) ->
     try
         gen_server:reply({Pid, Ref}, Res),
@@ -348,6 +372,7 @@ safe_reply(Res, #redturn_ctx{from=Pid, ref=Ref}) when is_pid(Pid), is_reference(
 safe_reply(_, _) ->
     ok.
 
+-spec terminate_resource(Resource :: binary(), Q :: queue:queue(), State :: redturn_state()) -> redturn_state().
 terminate_resource(Resource, Q, State=#redturn_state{waiting=W}) ->
     case queue:out(Q) of
         {{value, Id}, NQ} ->
