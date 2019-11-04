@@ -16,9 +16,11 @@
          start_link/1,
          stop/1,
          wait/3,
+         wait/4,
          wait_async/3,
          wait_async/4,
          signal/3,
+         signal/4,
          signal_noreply/3]).
 
 
@@ -56,6 +58,12 @@ stop(Pid) ->
 wait(Pid, Resource, Timeout) ->
     gen_server:call(Pid, {wait, Resource, Timeout}).
 
+-spec wait(Pid :: pid(), Resource :: binary(), Timeout :: non_neg_integer(), STimeout :: non_neg_integer()) -> {ok, binary()} | {error, term()}.
+% @doc Calls redturn server `Pid' to acquire a lock on resource `Resource', holding the lock for `Timeout' milliseconds once the lock is acquired. Returns
+% the ID associated with the holder of the lock. Will error if request for wait takes longer than `STimeout' milliseconds.
+wait(Pid, Resource, Timeout, STimeout) ->
+    gen_server:call(Pid, {wait, Resource, Timeout}, STimeout).
+
 -spec wait_async(Pid :: pid(), Resource :: binary(), Timeout :: non_neg_integer()) -> reference().
 % @doc Asynchronously calls redturn server `Pid' to acquire a lock on resource `Resource', holding the lock for `Timeout' milliseconds once the lock is acquired.
 % Returns a reference `Ref'; the currently running process will receive a message of the form `{Ref, {ok, Id}} | {Ref, {error, Err}}' in response to this request.
@@ -74,6 +82,12 @@ wait_async(Pid, Resource, Timeout, To) ->
 % @doc Sychronously signals to redturn server `Pid' that holder `Id' of resource `Resource' is ready to release it's lock.
 signal(Pid, Resource, Id) ->
     gen_server:call(Pid, {signal, Resource, Id}).
+
+-spec signal(Pid :: pid(), Resource :: binary(), Id :: binary(), STImeout :: non_neg_integer()) -> ok.
+% @doc Sychronously signals to redturn server `Pid' that holder `Id' of resource `Resource' is ready to release it's lock. Will error if request for signal takes
+% longer than `STimeout' milliseconds.
+signal(Pid, Resource, Id, STimeout) ->
+    gen_server:call(Pid, {signal, Resource, Id}, STimeout).
 
 -spec signal_noreply(Pid :: pid(), Resource :: binary(), Id :: binary()) -> ok.
 % @doc Asynchronously signals to redturn server `Pid' that holder `Id' of resource `Resource' is ready to release it's lock.
