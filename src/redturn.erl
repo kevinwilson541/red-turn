@@ -79,12 +79,12 @@ wait_async(Pid, Resource, Timeout, To) ->
     Ref.
 
 -spec signal(Pid :: pid(), Resource :: binary(), Id :: binary()) -> ok.
-% @doc Sychronously signals to redturn server `Pid' that holder `Id' of resource `Resource' is ready to release it's lock.
+% @doc Synchronously signals to redturn server `Pid' that holder `Id' of resource `Resource' is ready to release it's lock.
 signal(Pid, Resource, Id) ->
     gen_server:call(Pid, {signal, Resource, Id}).
 
 -spec signal(Pid :: pid(), Resource :: binary(), Id :: binary(), STImeout :: non_neg_integer()) -> ok.
-% @doc Sychronously signals to redturn server `Pid' that holder `Id' of resource `Resource' is ready to release it's lock. Will error if request for signal takes
+% @doc Synchronously signals to redturn server `Pid' that holder `Id' of resource `Resource' is ready to release it's lock. Will error if request for signal takes
 % longer than `STimeout' milliseconds.
 signal(Pid, Resource, Id, STimeout) ->
     gen_server:call(Pid, {signal, Resource, Id}, STimeout).
@@ -118,9 +118,9 @@ init(#redturn_opts{id=Id, module=Mod, conn_opts=COpts, subconn_opts=SOpts}) ->
                             waiting=maps:new(),
                             head_track=maps:new(),
                             req_queue=maps:new() },
-    
+
     subscribe_to_channel(State),
-    
+
     State1 = load_scripts(State),
 
     State2 = reset_msg_gen(State1),
@@ -147,7 +147,7 @@ handle_call(_Req, _From, State) ->
     {noreply, State}.
 
 -spec handle_cast(Msg :: redturn_cast_msg(), State :: redturn_state()) -> {noreply, redturn_state()}.
-handle_cast({wait, Resource, Timeout, Ref, From}, State) when 
+handle_cast({wait, Resource, Timeout, Ref, From}, State) when
     is_binary(Resource),
     is_integer(Timeout) andalso Timeout > 0 ->
     NState = add_wait(Resource, Timeout, From, Ref, State),
@@ -168,8 +168,8 @@ handle_info({message, Channel, Msg, SConn}, State=#redturn_state{id=Channel, mod
     is_binary(Channel),
     is_binary(Msg) ->
     Mod:ack_message(SConn),
-    case binary:split(Msg, <<":">>, [global]) of
-        [Resource, Id] ->
+    case binary:split(Msg, <<":">>) of
+        [Id, Resource] ->
             NState = notify_wait(Resource, Id, State),
             {noreply, NState};
         _ ->
@@ -226,7 +226,7 @@ add_script() ->
         local id = ARGV[3]
 
         if redis.call(\"RPUSH\", list, value) == 1 then
-            redis.call(\"PUBLISH\", channel, list .. \":\" .. id)
+            redis.call(\"PUBLISH\", channel, id .. \":\" .. list)
         end
 
         return redis.call(\"LINDEX\", list, 0)
@@ -259,7 +259,7 @@ remove_script() ->
             end
             local next_id = next_split[1]
             local next_channel = next_split[2]
-            redis.call(\"PUBLISH\", next_channel, list .. \":\" .. next_id)
+            redis.call(\"PUBLISH\", next_channel, next_id .. \":\" .. list)
         end
 
         return next

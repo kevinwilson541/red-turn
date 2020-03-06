@@ -24,7 +24,7 @@ local value = ARGV[2]
 local id = ARGV[3]
 
 if redis.call("RPUSH", list, value) == 1 then
-    redis.call("PUBLISH", channel, list .. ":" .. id)
+    redis.call("PUBLISH", channel, id .. ":" .. list)
 end
 
 return redis.call("LINDEX", list, 0)
@@ -60,7 +60,7 @@ if next ~= false and called == true then
     end
     local next_id = next_split[1]
     local next_channel = next_split[2]
-    redis.call("PUBLISH", next_channel, list .. ":" .. next_id)
+    redis.call("PUBLISH", next_channel, next_id .. ":" .. list)
 end
 
 return next
